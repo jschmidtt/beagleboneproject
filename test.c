@@ -1,87 +1,60 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-#define NUMDAYS 30
+#define MAXDAYS 120 /* prevent overflow by the usr */
+#define PATH_BUFFER 400 /* buffer for path provided by usr */
+#define BUFFER 100 /* general buffer */ 
 
-char *getLine (FILE *fp); /*gets line from file*/
-void outputData(char *outputFile); /* outputs the data to a file passed in at argv[2] */
+void openFile(char *outPut,char *settingsFile); /* opens the files */
+void getSettings(); /* idea for importing settings from an extra .txt file for various outputs */
+void importLines(); /* calls parseLine, getLine */
+char *getLine (FILE *fp); /* gets line from file */
 void parseLine(char*line, int index); /* parse the lines from the input file to tokens and get dates and data */
 void printData(); /* loops through dates and data and prints to output stream */
 void mallocData(); /* mallocs the arrays dates and data */
-void convertToInt();
-double computeAverage();
-int findMax();
-int findMin();
+void calcData(); /* calls converToInt, computeAverage, findMax, findMin */
+void convertToInt(); /* convert the data to ints for dataVals*/
+double computeAverage(); /* computes the average in dataVals */
+int findMax(); /* find the max in dataVals */
+int findMin(); /* find the min in dataVals */
+void outputData(char *outputFile); /* outputs the data to a file passed in at argv[2] */
+void sendEmail(); /* not working - but should send email of data */
+void createPlotFile(); /* creates a file to be used for plotting purposes */
+void blinkLeds(); /* should blink usr1 led at mission success */
 
-char *dates[31]; /* array of strings that stores the datas from the input file */
-char *data[31]; /* array of strings that stores the data/reading from the input file */
-int dataVals[30]; /* array of the data but converted to int */
+FILE *fp; /* file pointer with argv[1] */
+FILE *settings; /* settings file */
+char *outputFile; /* file pointer with argv[2] if passed in */
+char *dataPath; /* path where data.csv file is, if NULL defaults to current dir */
+char *dates[MAXDAYS]; /* array of strings that stores the datas from the input file */
+char *data[MAXDAYS]; /* array of strings that stores the data/reading from the input file */
+int dataVals[MAXDAYS]; /* array of the data but converted to int */
 double average; /* the avrg of the dataVals*/
 int max; /* max of dataVals*/
 int min; /* min of dataVals */
+int NUMDAYS; /* num of days to pull by the usr in the settings file */
 
 int main (int argc, char* argv[]){
     
-/* open the file passed into at the start of the program
-   currently only looks for argv[1] */
+    openFile(argv[1],argv[2]);
     
-    FILE *fp;
+    getSettings();
     
-    fp = fopen(argv[1],"r");
-    if(fp==NULL){
-        exit(EXIT_FAILURE);
-    }
-    else{
-        printf("File found: %s\n",argv[1]);
-        printf("Pulling and computing data...\n");
-    }
+    importLines();
     
-    mallocData();
-
+    calcData();
     
-/* get name of ouputFile from argv[2]*/   
-    char *outputFile;
-    if(argv[2]==NULL){
-        printf("No ouptput file given..\n");
-        exit(EXIT_FAILURE);
-    }
-    else{
-        outputFile = argv[2];
-    }
-
-/* get lines for correct amount of desired readings */
-    int x=0;
-    char *test[38];
-    while(x<38){
-        test[x]=malloc(sizeof(char)*26);
-        test[x]=getLine(fp);
-        //printf("%d: %s\n",x-6,test[x]);
-        x++;
-    }
-    
-/* parse the lines for dates and data */
-    x=0;
-    int a=6;
-    while(x<30){
-        parseLine(test[a],a);
-        //printf("%d: %s\n",x,dates[x]);
-        //printf("%d: %s\n",x,data[x]);
-        a++;
-        x++;
-    }
-    
-/*do a quick check, see printData*/
     //printData();
     
-    convertToInt();
-    average = computeAverage();
-    min = findMin();
-    max = findMax();
-    
-
-/* calls method to output data to a file */
     outputData(outputFile);
+
+    createPlotFile();
+    
+    //sendEmail();
+    
+    blinkLeds();
     
     printf("End Main, exiting....\n");
     
@@ -89,12 +62,94 @@ int main (int argc, char* argv[]){
     
 }//end Main
 
+/* opens the files passed into argv[] */
+void openFile(char *outPut,char *settingsFile){
+    
+/* open settings file */ 
+    settings = fopen(settingsFile,"r");
+    if(settings==NULL){
+        printf("Settings File Not Found...\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    mallocData();
+    
+/* get name of ouputFile from argv[1]*/ 
+    if(outPut==NULL){
+        printf("No ouptput file given..\n");
+        exit(EXIT_FAILURE);
+    }
+    else{
+        outputFile = malloc(sizeof(char)*BUFFER);
+        outputFile = outPut;
+    }
+    
+}//end openFile
+
+/* looks at the settings files and thus affects the overall settings, also opens the input file */
+void getSettings(){
+    int numDays;
+    dataPath = malloc(sizeof(char)*PATH_BUFFER);
+    fscanf(settings,"%d",&numDays);
+    fscanf(settings,"%s",dataPath);
+    
+    if(strcmp(dataPath,"null")!=0){
+        printf("Path: %s\n",dataPath);
+        if((fp = fopen(dataPath,"r"))==NULL){
+            printf("Error opening data file...\n");
+            exit(EXIT_FAILURE);
+        }
+    }else{//default 
+        printf("No input path found, defaulting to current dir...\n");
+        dataPath = "data.csv";
+        if((fp = fopen(dataPath,"r"))==NULL){
+            printf("Error opening data file...\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    if(numDays==0){//default 
+        NUMDAYS = 30;
+    }
+    if(numDays>MAXDAYS){
+        printf("numDays to large defaulting to MAXDAYS (120)...\n");
+        NUMDAYS=MAXDAYS;
+    }else{
+        NUMDAYS=numDays;
+    }
+    printf("Settings File Found numDays: %d\n",numDays);
+}
+
+/* does some loops and calls getLine and parseLine to import the data of the file */
+void importLines(){
+
+/* get lines for correct amount of desired readings */
+    fseek(fp,393,SEEK_SET);//seek to first needed line of dates and data
+    char c;
+    int x=0;
+    char *test[NUMDAYS];
+    while(x<NUMDAYS){
+        test[x]=malloc(sizeof(char)*26);
+        test[x]=getLine(fp);
+        x++;
+    }
+    
+/* parse the lines for dates and data */
+    x=0;
+    int a=0;
+    while(x<NUMDAYS){
+        parseLine(test[a],a);
+        a++;
+        x++;
+    }
+}//end importLines
+
 /* reads a line from the file of 100 chars long just to make sure you reach end of line returns this line to caller */
 char *getLine (FILE *fp){
     char *line;
     line = malloc(sizeof(char)*26);
-    fgets(line,100
-    ,fp);
+    fgets(line,45,fp);
+    //fseek(fp,1,SEEK_CUR);
     //printf("Line Read: %s\n",line);
     return line;
 }//end getLine
@@ -102,84 +157,22 @@ char *getLine (FILE *fp){
 /* parse the line looking for the token ';' returns this new char to caller */
 void parseLine(char*line, int index){
     char*tmp=strtok(line,";");
-    dates[index-6]=tmp;
+    dates[index]=tmp;
     tmp=strtok(NULL,";");
     tmp=strtok(NULL,";");
-    data[index-6]=tmp;
+    data[index]=tmp;
     
 }//end parseLine
-
-/* output the data to the txt file passed in after the .csv (argv[2])
-    assuming this is not empty */
-void outputData(char *outputFile){
-    
-    FILE *tmp;
-    tmp = fopen(outputFile,"w");
-    if(tmp==NULL){
-        exit(EXIT_FAILURE);
-    }
-    else{
-        printf("Output File Opened, writing data...\n");
-    }
-    fputs("Glucose Meter Reading Report: Your Last 30 Days\n\n", tmp);
-    fputs("Your Glucose Levels Were:\n\n", tmp);
-    int x = 30;
-    while(x>0){
-	switch(x){
-		case 30:
-			fputs("Days 1 - 5\t", tmp);
-			break;
-		case 25:
-			fputs("Days 5 - 10\t", tmp);
-			break;
-		case 20:
-			fputs("Days 10 - 15\t", tmp);
-			break;
-		case 15:
-			fputs("Days 15 - 20\t", tmp);
-			break;
-		case 10:
-			fputs("Days 20 - 25\t", tmp);
-			break;
-		case 5:
-			fputs("Days 25 - 30\t", tmp);
-			break;
-	}
-        fputs("Date: ",tmp);
-        fputs(dates[x-1],tmp);
-        fputs(" -- ",tmp);
-        fputs(data[x-1],tmp);
-        fputs(" mg/dl",tmp);
-	if((x-1)%5==0){
-        	fputs("\n",tmp);
-	}else{
-		fputs("\t", tmp);
-	}
-        x--;
-    }
-	
-	fputs("\nYour Average Glucose Level Was: ", tmp);
-	fprintf(tmp, "%f\n", average);
-	fputs("\nYour Lowest Glucose Level Was: ", tmp);
-	fprintf(tmp, "%d\n", min);
-	fputs("\nYour Highest Glucose Level Was: ", tmp);
-	fprintf(tmp, "%d", max);
-
-    
-    printf("Finished, closing file.\n");
-    
-    //fclose(tmp); /*if you clsoe the file you get an error, trying to work this out */
-    
-}//end outputData
 
 /*call this if you wish to quickly print out the info stored in dates and data
     only prints to output stream not a file */
 void printData(){
     int cnt=0;
     printf("Printing data...\n");
-    while(cnt<30){
+    while(cnt<NUMDAYS){
         printf("%d: %s",cnt+1,dates[cnt]);
-        printf(" Reading: %s\n",data[cnt]);
+        printf(" Reading: %s",data[cnt]);
+        printf(" DataVal: %d\n",dataVals[cnt]);
         cnt++;
     }
     printf("Average reading for last %d days was: %f\nMinimum reading for last %d days was: %d\nMaximum reading for last %d days was: %d\n", NUMDAYS, average, NUMDAYS, min, NUMDAYS, max);
@@ -188,13 +181,21 @@ void printData(){
 /* ensures there is proper space for all the data put into these arrays */
 void mallocData(){
     int cnt=0;
-    while(cnt<30){
+    while(cnt<NUMDAYS){
         dates[cnt]=malloc(sizeof(char)*10);
         data[cnt]=malloc(sizeof(char)*5);
-//	dataVals[cnt] = malloc(sizeof(int)*3);
+        //dataVals[cnt] = malloc(sizeof(int)*3);
         cnt++;
     }
 }//end mallocData
+
+/*calls methods to calc the data in dataVals just used to clean up the main*/
+void calcData(){
+    convertToInt();
+    average = computeAverage();
+    min = findMin();
+    max = findMax();
+}
 
 /* Converts data string array to double array */
 void convertToInt(){
@@ -237,3 +238,121 @@ int findMin(){
 	}
 	return min;
 }//end findMin
+
+/* output the data to the txt file passed in after the .csv (argv[2])
+    assuming this is not empty */
+void outputData(char *outputFile){
+    
+    FILE *tmp;
+    tmp = fopen(outputFile,"w");
+    if(tmp==NULL){
+        exit(EXIT_FAILURE);
+    }
+    else{
+        printf("Output File Opened, writing data...\n");
+    }
+    fputs("Glucose Meter Reading Report: Your Last 30 Days\n\n", tmp);
+    fputs("Your Glucose Levels Were:\n\n", tmp);
+    int x = 30;
+    while(x>0){
+	switch(x){
+		case 30:
+			fputs("Days 1 - 5\t\t", tmp);
+			break;
+		case 25:
+			fputs("Days 6 - 10\t\t", tmp);
+			break;
+		case 20:
+			fputs("Days 11 - 15\t", tmp);
+			break;
+		case 15:
+			fputs("Days 16 - 20\t", tmp);
+			break;
+		case 10:
+			fputs("Days 21 - 25\t", tmp);
+			break;
+		case 5:
+			fputs("Days 26 - 30\t", tmp);
+			break;
+	}
+        fputs("Date: ",tmp);
+        fputs(dates[x-1],tmp);
+        fputs(" -- ",tmp);
+        fputs(data[x-1],tmp);
+        fputs(" mg/dl",tmp);
+	if((x-1)%5==0){
+        	fputs("\n",tmp);
+	}else{
+		fputs("\t", tmp);
+	}
+        x--;
+    }
+	
+	fputs("\nYour Average Glucose Level Was: ", tmp);
+	fprintf(tmp, "%f\n", average);
+	fputs("\nYour Lowest Glucose Level Was: ", tmp);
+	fprintf(tmp, "%d\n", min);
+	fputs("\nYour Highest Glucose Level Was: ", tmp);
+	fprintf(tmp, "%d", max);
+
+    
+    printf("Finished, closing file.\n");
+    
+    //fclose(tmp); /*if you clsoe the file you get an error, trying to work this out */
+    
+}//end outputData
+
+/* suppose to send data to email */
+void sendEmail(){
+        char cmd[100];  // to hold the command.
+        char to[] = "tug14646@temple.edu"; // email id of the recepient.
+        char body[] = "This is a test email sent from a BeagleBone Black.";    // email body.
+        char tempFile[100];     // name of tempfile.
+
+        strcpy(tempFile,tempnam("/tmp","sendmail")); // generate temp file name.
+
+        FILE *fp = fopen(tempFile,"w"); // open it for writing.
+        fprintf(fp,"%s\n",body);        // write body to it.
+//        fclose(fp);             // close it.
+
+        sprintf(cmd,"sendmail %s < %s",to,tempFile); // prepare command.
+        system(cmd);     // execute it.
+
+
+}//end sendEmail
+
+/* creates a file that is formatted to use with plotter */
+void createPlotFile(){
+	FILE *fp = fopen("plotdata.dat", "w");
+	int i=0;
+	for (i; i<NUMDAYS; i++){
+		fprintf(fp, "%d", i+1);
+		fputs("\t", fp);
+		fputs(data[i], fp);
+		fputs("\n", fp);
+	}
+}//end createPlotFile
+
+/* blinks usr1 leds for mission success */
+void blinkLeds(){
+    FILE *LEDControl = NULL;
+    char *LEDBright = "/sys/class/leds/beaglebone:green:usr1/brightness";
+    int loops = 2;
+    int x = 0;
+    while (x<loops){
+        if((LEDControl = fopen(LEDBright,"r+"))!=NULL){
+            //printf("Blinking\n");
+            fwrite("1",sizeof(char),1,LEDControl);
+            //fclose(LEDControl);
+        }
+        rewind(LEDControl);
+        sleep(2);
+        if((LEDControl = fopen(LEDBright,"r+"))!=NULL){
+            //printf("Blinking\n");
+            fwrite("0",sizeof(char),1,LEDControl);
+            //fclose(LEDControl);
+        }
+        sleep(3);
+        x++;
+    }
+}//end blinkLeds
